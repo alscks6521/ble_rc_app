@@ -23,7 +23,11 @@ class BleService {
   Future<bool> connect(BluetoothDevice device) async {
     try {
       _statusController.add('연결 중...');
-      await device.connect(timeout: const Duration(seconds: 10));
+      await device.connect(
+        license: License.free,
+        timeout: const Duration(seconds: 10),
+        mtu: null,
+      );
       _device = device;
 
       // 연결 끊김 자동 감지
