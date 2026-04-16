@@ -92,10 +92,13 @@ lib/
 ## 주요 의존성
 
 ```yaml
-flutter_blue_plus: ^1.32.12
-permission_handler: ^11.3.1
+flutter_blue_plus: ^2.2.1  
+permission_handler: ^12.0.1
 ```
   
 
 ![alt text](imgss/image.png)  
+  
+  
+---
   
