@@ -1,0 +1,190 @@
+
+/*
+ * 4WD RC카 아두이노 제어 코드 v2 — 조이스틱 아날로그 버전
+ *
+ * [프로토콜]
+ *  Flutter → 아두이노: "Lxxx Rxxx\n"
+ *    xxx = 0~255  (128 = 정지, 255 = 최대전진, 0 = 최대후진)
+ *    예) "L200R200\n" → 양쪽 전진
+ *        "L200R060\n" → 전진하면서 우회전 (좌측 빠름)
+ *        "L060R200\n" → 전진하면서 좌회전 (우측 빠름)
+ *        "L200R060\n" → 제자리 우회전에 가깝게
+ *        "S\n"        → 즉시 정지 (안전용)
+ *
+ * [핀 배선]
+ *  HM-10  VCC → 3.3V     HM-10  GND → GND
+ *  HM-10  TXD → D2       HM-10  RXD → D3
+ *  L298N  ENA → D5 (PWM) L298N  ENB → D6 (PWM)
+ *  L298N  IN1 → D7       L298N  IN2 → D8
+ *  L298N  IN3 → D9       L298N  IN4 → D10
+ *  L298N  GND → GND      L298N  5VOUT → 5V
+ *  배터리+ → L298N 12V   배터리- → L298N GND
+ */
+
+#include <SoftwareSerial.h>
+
+// ── 핀 ──────────────────────────────────────────────
+#define BLE_RX  2
+#define BLE_TX  3
+#define ENA     5
+#define ENB     6
+#define IN1     7
+#define IN2     8
+#define IN3     9
+#define IN4     10
+
+// ── 상수 ─────────────────────────────────────────────
+#define DEAD_ZONE     8     // 128 ± 이 값 이내는 정지로 처리
+#define MIN_PWM      40     // 모터 최소 구동 PWM (너무 낮으면 모터 안 돌아감)
+#define CMD_TIMEOUT 300     // ms — 이 시간 동안 명령 없으면 자동 정지 (안전)
+
+SoftwareSerial ble(BLE_RX, BLE_TX);
+
+String  rxBuf  = "";
+uint32_t lastCmdTime = 0;
+
+// ── 함수 선언 ─────────────────────────────────────────
+void stopMotors();
+void setLeftMotor(int val);   // -255 ~ 255
+void setRightMotor(int val);  // -255 ~ 255
+void applyMotors(int rawL, int rawR);  // 0~255 원시값
+int  centerToSigned(int raw);          // 0~255 → -255~255 변환
+
+// ═══════════════════════════════════════════════════════
+void setup() {
+  pinMode(ENA, OUTPUT); pinMode(ENB, OUTPUT);
+  pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
+  stopMotors();
+  Serial.begin(9600);
+  ble.begin(9600);
+  Serial.println("RC Car v2 ready.");
+}
+
+// ═══════════════════════════════════════════════════════
+void loop() {
+  // BLE 수신 처리
+  while (ble.available()) {
+    char c = (char)ble.read();
+    if (c == '\n') {
+      processCommand(rxBuf);
+      rxBuf = "";
+    } else {
+      rxBuf += c;
+      if (rxBuf.length() > 20) rxBuf = ""; // 버퍼 오버플로 방지
+    }
+  }
+
+  // 타임아웃 안전 정지
+  if (millis() - lastCmdTime > CMD_TIMEOUT) {
+    stopMotors();
+  }
+}
+
+// ── 명령 파싱 ─────────────────────────────────────────
+// "Lxxx Rxxx" 또는 "S" 처리
+void processCommand(String cmd) {
+  cmd.trim();
+  if (cmd.length() == 0) return;
+  lastCmdTime = millis();
+
+  Serial.print("CMD: "); Serial.println(cmd);
+
+  // 즉시 정지
+  if (cmd == "S") {
+    stopMotors();
+    return;
+  }
+
+  // "Lxxx Rxxx" 파싱
+  int li = cmd.indexOf('L');
+  int ri = cmd.indexOf('R');
+  if (li < 0 || ri < 0) return;
+
+  int rawL = cmd.substring(li + 1, ri).toInt();
+  int rawR = cmd.substring(ri + 1).toInt();
+
+  // 범위 클램핑
+  rawL = constrain(rawL, 0, 255);
+  rawR = constrain(rawR, 0, 255);
+
+  applyMotors(rawL, rawR);
+}
+
+// ── 모터 적용 ─────────────────────────────────────────
+// rawL, rawR: 0~255 (128 = 정지)
+void applyMotors(int rawL, int rawR) {
+  setLeftMotor(centerToSigned(rawL));
+  setRightMotor(centerToSigned(rawR));
+}
+
+// 0~255 → 데드존 적용 후 -255~255 변환
+int centerToSigned(int raw) {
+  int centered = raw - 128; // -128 ~ 127
+  if (abs(centered) <= DEAD_ZONE) return 0;
+  // -255 ~ 255 스케일로 변환
+  return map(abs(centered), DEAD_ZONE, 128, 0, 255)
+         * (centered > 0 ? 1 : -1);
+}
+
+// ── 좌측 모터 설정 (-255 ~ 255) ──────────────────────
+void setLeftMotor(int power) {
+  if (power == 0) {
+    digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
+    analogWrite(ENA, 0);
+    return;
+  }
+  int pwm = map(abs(power), 0, 255, MIN_PWM, 255);
+  if (power > 0) {
+    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+  } else {
+    digitalWrite(IN1, LOW);  digitalWrite(IN2, HIGH);
+  }
+  analogWrite(ENA, pwm);
+}
+
+// ── 우측 모터 설정 (-255 ~ 255) ──────────────────────
+void setRightMotor(int power) {
+  if (power == 0) {
+    digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
+    analogWrite(ENB, 0);
+    return;
+  }
+  int pwm = map(abs(power), 0, 255, MIN_PWM, 255);
+  if (power > 0) {
+    digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+  } else {
+    digitalWrite(IN3, LOW);  digitalWrite(IN4, HIGH);
+  }
+  analogWrite(ENB, pwm);
+}
+
+// ── 전체 정지 ─────────────────────────────────────────
+void stopMotors() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+}
+
+
+
+//
+```
+-> 4월 20일 코드 수정 테스트
+  fix : 좌향후진, 우향후진 반대 작동현상 해결 로직 (일단 한 쪽만)
+void setLeftMotor(int power) {
+  if (power == 0) {
+    digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
+    analogWrite(ENA, 0);
+    return;
+  }
+  int pwm = map(abs(power), 0, 255, MIN_PWM, 255);
+  if (power > 0) {
+    digitalWrite(IN1, LOW);  digitalWrite(IN2, HIGH); // 반전
+  } else {
+    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);  // 반전
+  }
+  analogWrite(ENA, pwm);
+}
+```
